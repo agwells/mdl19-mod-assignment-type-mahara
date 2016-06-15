@@ -30,7 +30,8 @@ class assignment_mahara extends assignment_base {
 
         if ($editable) {
             $viewid = optional_param('view', null, PARAM_INTEGER);
-            if ($viewid && $this->submit_view($viewid)) {
+            $iscoll = optional_param('iscoll', false, PARAM_BOOL);
+            if ($viewid && $this->submit_view($viewid, $iscoll)) {
                 //TODO fix log actions - needs db upgrade
                 $submission = $this->get_submission();
                 add_to_log($this->course->id, 'assignment', 'upload',
@@ -62,7 +63,7 @@ class assignment_mahara extends assignment_base {
             $data = unserialize($submission->data2);
             echo '<div><strong>' . get_string('selectedview', 'assignment_mahara') . ': </strong>'
               . '<a href="' . $CFG->wwwroot . '/auth/mnet/jump.php?hostid=' . $this->remote_mnet_host_id()
-              . '&amp;wantsurl=' . urlencode($data['url']) . '">' 
+              . '&amp;wantsurl=' . urlencode($data['url']) . '">'
               . $data['title'] . '</a></div>';
         }
 
@@ -75,6 +76,37 @@ class assignment_mahara extends assignment_base {
             $query = optional_param('q', null, PARAM_TEXT);
             list($error, $views) = $this->get_views($query);
 
+            // Filter out collection views, special views, and already-submitted views (except the current one)
+            foreach ($views['data'] as $i => $view) {
+                if (
+                        $view['collid']
+                        || $view['type'] != 'portfolio'
+                        || (
+                                $view['submittedtime']
+//       	                        && !($view['id'] == $selectedid && $selectediscollection == false)
+                        )
+                ) {
+                    unset($views['ids'][$i]);
+                    unset($views['data'][$i]);
+                    $views['count']--;
+                }
+            }
+            // Filter out empty or submitted collections
+            foreach ($views['collections']['data'] as $i => $coll) {
+                if (
+                        (
+                                array_key_exists('numviews', $coll)
+                                && $coll['numviews'] == 0
+                        ) || (
+                                $coll['submittedtime']
+//       	                        && !($coll['id'] == $selectedid && $selectediscollection == true)
+                        )
+                ) {
+                    unset($views['collections']['data'][$i]);
+                    $views['collections']['count']--;
+                }
+            }
+
             if ($error) {
                 echo $error;
             } else {
@@ -84,7 +116,7 @@ class assignment_mahara extends assignment_base {
                   . '<input type="hidden" name="id" value="' . $this->cm->id . '">'
                   . '<label for="q">' . get_string('search') . ':</label> <input type="text" name="q" value="' . $query . '">'
                   . '</form>';
-                if ($views['count'] < 1) {
+                if ($views['count'] < 1 && $views['collections']['count'] < 1) {
                     echo get_string('noviewsfound', 'assignment_mahara', $this->remotehost->name);
                 } else {
                     echo '<h4>' . $this->remotehost->name . ': ' . get_string('viewsby', 'assignment_mahara', $views['displayname']) . '</h4>';
@@ -94,13 +126,28 @@ class assignment_mahara extends assignment_base {
                       . '<tr><td style="padding:0 5px 0 5px;">(' . get_string('clicktopreview', 'assignment_mahara') . ')</td>'
                       . '<td style="padding:0 5px 0 5px;">(' . get_string('clicktoselect', 'assignment_mahara') . ')</td></tr>'
                       . '</thead><tbody>';
+                    // Print views
                     foreach ($views['data'] as &$v) {
                         $windowname = 'view' . $v['id'];
                         $viewurl = $this->remotehost->jumpurl . '&wantsurl=' . urlencode($v['url']);
                         $js = "this.target='$windowname';window.open('" . $viewurl . "', '$windowname', 'resizable,scrollbars,width=920,height=600');return false;";
                         echo '<tr><td><a href="' . $viewurl . '" target="_blank" onclick="' . $js . '">'
                           . '<img align="top" src="'.$CFG->pixpath.'/f/html.gif" height="16" width="16" alt="html" /> ' . $v['title'] . '</a></td>'
-                          . '<td><a href="?id=' . $this->cm->id. '&view=' . $v['id'] . '">' . get_string('submit') . '</a></td></tr>';
+                          . '<td><a href="?id=' . $this->cm->id. '&view=' . $v['id'] . '&iscoll=0">' . get_string('submit') . '</a></td></tr>';
+                    }
+                    // Print collections
+                    foreach ($views['collections']['data'] as &$v) {
+                        $windowname = 'view' . $v['id'];
+                        $viewurl = $this->remotehost->jumpurl . '&wantsurl=' . urlencode($v['url']);
+                        $js = "this.target='$windowname';window.open('" . $viewurl . "', '$windowname', 'resizable,scrollbars,width=920,height=600');return false;";
+                        echo '<tr><td><a href="' . $viewurl . '" target="_blank" onclick="' . $js . '">'
+                          . '<img align="top" src="'.$CFG->pixpath.'/f/folder.gif" height="16" width="16" alt="html" /> ' . $v['name'] . ' (';
+                        if ($v['numviews'] == 1) {
+                            echo get_string('1viewincollection', 'assignment_mahara');
+                        } else {
+                            echo get_string('numviewsincollection', 'assignment_mahara', $v['numviews']);
+                        }
+                        echo ')</a></td><td><a href="?id=' . $this->cm->id. '&view=' . $v['id'] . '&iscoll=1">' . get_string('submit') . '</a></td></tr>';
                     }
                     echo '</tbody></table>';
                 }
@@ -148,7 +195,7 @@ class assignment_mahara extends assignment_base {
         }
         $data = unserialize($submission->data2);
         return '<div><a href="' . $CFG->wwwroot . '/auth/mnet/jump.php?hostid=' . $this->remote_mnet_host_id()
-          . '&amp;wantsurl=' . urlencode($data['url']) . '">' 
+          . '&amp;wantsurl=' . urlencode($data['url']) . '">'
           . $data['title'] . '</a></div>';
     }
 
@@ -161,10 +208,10 @@ class assignment_mahara extends assignment_base {
 
         // Get Mahara hosts we are doing SSO with
         $sql = "
-             SELECT DISTINCT 
-                 h.id, 
+             SELECT DISTINCT
+                 h.id,
                  h.name
-             FROM 
+             FROM
                  {$CFG->prefix}mnet_host h,
                  {$CFG->prefix}mnet_application a,
                  {$CFG->prefix}mnet_host2service h2s_IDP,
@@ -227,7 +274,7 @@ class assignment_mahara extends assignment_base {
         return $mnet_sp;
     }
 
-    function submit_view($viewid) {
+    function submit_view($viewid, $iscoll) {
         global $CFG, $USER, $MNET;
 
         $submission = $this->get_submission($USER->id, true);
@@ -238,11 +285,13 @@ class assignment_mahara extends assignment_base {
         $mnetrequest->set_method('mod/mahara/rpclib.php/submit_view_for_assessment');
         $mnetrequest->add_param($USER->username);
         $mnetrequest->add_param($viewid);
+        $mnetrequest->add_param($iscoll);
 
         if ($mnetrequest->send($mnet_sp) !== true) {
             return false;
         }
         $data = $mnetrequest->response;
+        $data->iscoll = $iscoll;
 
         $mahara_outcomes = array();
 
@@ -384,4 +433,3 @@ class assignment_mahara extends assignment_base {
     }
 
 }
-?>
