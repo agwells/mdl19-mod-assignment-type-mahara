@@ -432,4 +432,26 @@ class assignment_mahara extends assignment_base {
         $mnetrequest->send($mnet_sp);
     }
 
+    /**
+     * This is a trigger function, called after a submission has been graded.
+
+     * @see assignment_base::update_grade()
+     * @param object $submission An object with the following data:
+     *  - assignment (id of the assignment instance)
+     *  - format (the course's format?)
+     *  - grade (the numerical grade submitted)
+     *  - id (??)
+     *  - mailed
+     *  - numfiles
+     *  - submissioncontent (the teacher's feedback)
+     *  - teacher (id of the teacher)
+     *  - timecreated
+     *  - timemarked
+     *  - timemodified
+     *  - user (id of the user being graded)
+     */
+    function update_grade($submission) {
+        parent::update_grade($submission);
+    }
+
 }
