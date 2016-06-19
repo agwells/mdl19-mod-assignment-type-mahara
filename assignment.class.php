@@ -7,6 +7,17 @@ require_once($CFG->libdir.'/formslib.php');
  */
 class assignment_mahara extends assignment_base {
 
+    // These constants indicate our knowledge of the page's status *in Mahara*.
+    // We have not changed the page's status on the Mahara side.
+    const MAHARA_STATUS_NORMAL = 'selected';
+
+    // We've locked the page in Mahara
+    // (And, if it's a non-upgraded Mahara, we've been issued an access token)
+    const MAHARA_STATUS_LOCKED = 'submitted';
+
+    // We've locked the page in Mahara, and subsequently unlocked it.
+    // (If we're dealing with a non-upgraded Mahara, the access token probably still exists)
+    const MAHARA_STATUS_RELEASED = 'released';
     private $remotehost;
 
     function assignment_mahara($cmid='staticonly', $assignment=NULL, $cm=NULL, $course=NULL) {
@@ -14,6 +25,11 @@ class assignment_mahara extends assignment_base {
         $this->type = 'mahara';
     }
 
+    /**
+     * Prints the full detailed view of the submission. Used for grading
+     * as well as for the student's own creation of submissions.
+     * @see assignment_base::view()
+     */
     function view() {
 
         global $CFG, $USER;
@@ -63,7 +79,7 @@ class assignment_mahara extends assignment_base {
             $data = unserialize($submission->data2);
             echo '<div><strong>' . get_string('selectedview', 'assignment_mahara') . ': </strong>'
               . '<a href="' . $CFG->wwwroot . '/auth/mnet/jump.php?hostid=' . $this->remote_mnet_host_id()
-              . '&amp;wantsurl=' . urlencode($data['url']) . '">'
+              . '&amp;wantsurl=' . urlencode($data['mneturl']) . '">' 
               . $data['title'] . '</a></div>';
         }
 
@@ -75,7 +91,6 @@ class assignment_mahara extends assignment_base {
 
             $query = optional_param('q', null, PARAM_TEXT);
             list($error, $views) = $this->get_views($query);
-
             // Filter out collection views, special views, and already-submitted views (except the current one)
             foreach ($views['data'] as $i => $view) {
                 if (
@@ -129,7 +144,7 @@ class assignment_mahara extends assignment_base {
                     // Print views
                     foreach ($views['data'] as &$v) {
                         $windowname = 'view' . $v['id'];
-                        $viewurl = $this->remotehost->jumpurl . '&wantsurl=' . urlencode($v['url']);
+                        $viewurl = $this->remotehost->jumpurl . '&wantsurl=' . urlencode($v['mneturl']);
                         $js = "this.target='$windowname';window.open('" . $viewurl . "', '$windowname', 'resizable,scrollbars,width=920,height=600');return false;";
                         echo '<tr><td><a href="' . $viewurl . '" target="_blank" onclick="' . $js . '">'
                           . '<img align="top" src="'.$CFG->pixpath.'/f/html.gif" height="16" width="16" alt="html" /> ' . $v['title'] . '</a></td>'
@@ -138,7 +153,7 @@ class assignment_mahara extends assignment_base {
                     // Print collections
                     foreach ($views['collections']['data'] as &$v) {
                         $windowname = 'view' . $v['id'];
-                        $viewurl = $this->remotehost->jumpurl . '&wantsurl=' . urlencode($v['url']);
+                        $viewurl = $this->remotehost->jumpurl . '&wantsurl=' . urlencode($v['mneturl']);
                         $js = "this.target='$windowname';window.open('" . $viewurl . "', '$windowname', 'resizable,scrollbars,width=920,height=600');return false;";
                         echo '<tr><td><a href="' . $viewurl . '" target="_blank" onclick="' . $js . '">'
                           . '<img align="top" src="'.$CFG->pixpath.'/f/folder.gif" height="16" width="16" alt="html" /> ' . $v['name'] . ' (';
@@ -188,6 +203,12 @@ class assignment_mahara extends assignment_base {
         echo '</table>';
     }
 
+    /**
+     * Prints a summary of the student's submission, e.g. for the gradebook
+     * @param int $userid
+     * @param string $return
+     * @return string
+     */
     function print_student_answer($userid, $return=false){
         global $CFG;
         if (!$submission = $this->get_submission($userid)) {
@@ -195,7 +216,7 @@ class assignment_mahara extends assignment_base {
         }
         $data = unserialize($submission->data2);
         return '<div><a href="' . $CFG->wwwroot . '/auth/mnet/jump.php?hostid=' . $this->remote_mnet_host_id()
-          . '&amp;wantsurl=' . urlencode($data['url']) . '">'
+          . '&amp;wantsurl=' . urlencode($data['mneturl']) . '">' 
           . $data['title'] . '</a></div>';
     }
 
@@ -208,10 +229,10 @@ class assignment_mahara extends assignment_base {
 
         // Get Mahara hosts we are doing SSO with
         $sql = "
-             SELECT DISTINCT
-                 h.id,
+             SELECT DISTINCT 
+                 h.id, 
                  h.name
-             FROM
+             FROM 
                  {$CFG->prefix}mnet_host h,
                  {$CFG->prefix}mnet_application a,
                  {$CFG->prefix}mnet_host2service h2s_IDP,
@@ -274,7 +295,29 @@ class assignment_mahara extends assignment_base {
         return $mnet_sp;
     }
 
-    function submit_view($viewid, $iscoll) {
+    /**
+     * Add MNet access params to a view/collection URL.
+     * 
+     * When a properly upgraded Mahara site sees these params in a request 
+     * coming from a user who has authenticated to Mahara via MNet, it will 
+     * use the params to phone back to Moodle to check whether that Moodle
+     * user has permission to view the specified page as part of a Moodle
+     * assigment submission.
+     * 
+     * @param string $url Basic Moodle view URL
+     * @param int $viewid ID of the view or collection
+     * @param bool $iscollection Whether it's a view or a collection
+     * @param int $submissionid ID of the assignment submission it's part of
+     * @return string a URL with additional params
+     */
+    public function mnet_access_url($url, $viewid, $iscollection, $submissionid) {
+        global $DB;
+        return $url
+            . '&assignment=' . $submissionid
+            . '&mnet' . ($iscollection ? 'coll' : 'view') . 'id=' . $viewid;
+    }
+    
+    function submit_view($viewid, $iscollection = false, $lock = false) {
         global $CFG, $USER, $MNET;
 
         $submission = $this->get_submission($USER->id, true);
@@ -285,13 +328,23 @@ class assignment_mahara extends assignment_base {
         $mnetrequest->set_method('mod/mahara/rpclib.php/submit_view_for_assessment');
         $mnetrequest->add_param($USER->username);
         $mnetrequest->add_param($viewid);
-        $mnetrequest->add_param($iscoll);
+        $mnetrequest->add_param($iscollection);
+        $mnetrequest->add_param('moodle-assignsubmission-mahara:2');
+        $mnetrequest->add_param($lock);
 
         if ($mnetrequest->send($mnet_sp) !== true) {
             return false;
         }
         $data = $mnetrequest->response;
-        $data->iscoll = $iscoll;
+        $data['iscollection'] = $iscollection;
+        // Assume we're dealing with a fully upgraded Mahara
+        // that uses Mnet for access control, instead of
+        // Mahara secreturl access tokens
+        if ($lock) {
+            $data['viewstatus'] = self::MAHARA_STATUS_LOCKED;
+        } else {
+            $data['viewstatus'] = self::MAHARA_STATUS_NORMAL;
+        }
 
         $mahara_outcomes = array();
 
@@ -309,7 +362,17 @@ class assignment_mahara extends assignment_base {
         $update->id           = $submission->id;
         $update->timemodified = time();
 
-        $update->data1 = addslashes('<a href="' . $data['fullurl'] . '">' . clean_text($data['title']) . '</a>');
+        // data1 column is never actually used anywhere... and I can't think
+        // of one value that would be consistently useful by itself.
+//        $update->data1 = addslashes('<a href="' . $data['fullurl'], '">' . clean_text($data['title']) . '</a>');
+
+        // Add mnet access flags to the page's URL
+        $data['mneturl'] = $this->mnet_access_url(
+                $data['url'],
+                $viewid,
+                $iscollection,
+                $submission->id
+        );
         $update->data2 = addslashes(serialize($data));
 
 
@@ -432,26 +495,5 @@ class assignment_mahara extends assignment_base {
         $mnetrequest->send($mnet_sp);
     }
 
-    /**
-     * This is a trigger function, called after a submission has been graded.
-
-     * @see assignment_base::update_grade()
-     * @param object $submission An object with the following data:
-     *  - assignment (id of the assignment instance)
-     *  - format (the course's format?)
-     *  - grade (the numerical grade submitted)
-     *  - id (??)
-     *  - mailed
-     *  - numfiles
-     *  - submissioncontent (the teacher's feedback)
-     *  - teacher (id of the teacher)
-     *  - timecreated
-     *  - timemarked
-     *  - timemodified
-     *  - user (id of the user being graded)
-     */
-    function update_grade($submission) {
-        parent::update_grade($submission);
-    }
-
 }
+?>
