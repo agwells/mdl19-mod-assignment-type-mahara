@@ -2,9 +2,9 @@
 require_once($CFG->libdir.'/formslib.php');
 
 // Statuses for locking setting.
-define('ASSIGNSUBMISSION_MAHARA_SETTING_DONTLOCK', 0);
-define('ASSIGNSUBMISSION_MAHARA_SETTING_KEEPLOCKED', 1);
-define('ASSIGNSUBMISSION_MAHARA_SETTING_UNLOCK', 2);
+define('ASSIGNMENT_MAHARA_SETTING_DONTLOCK', 0);
+define('ASSIGNMENT_MAHARA_SETTING_KEEPLOCKED', 1);
+define('ASSIGNMENT_MAHARA_SETTING_UNLOCK', 2);
 
 /**
  * Extend the base assignment class for mahara portfolio assignments
@@ -96,36 +96,6 @@ class assignment_mahara extends assignment_base {
 
             $query = optional_param('q', null, PARAM_TEXT);
             list($error, $views) = $this->get_views($query);
-            // Filter out collection views, special views, and already-submitted views (except the current one)
-            foreach ($views['data'] as $i => $view) {
-                if (
-                        $view['collid']
-                        || $view['type'] != 'portfolio'
-                        || (
-                                $view['submittedtime']
-//       	                        && !($view['id'] == $selectedid && $selectediscollection == false)
-                        )
-                ) {
-                    unset($views['ids'][$i]);
-                    unset($views['data'][$i]);
-                    $views['count']--;
-                }
-            }
-            // Filter out empty or submitted collections
-            foreach ($views['collections']['data'] as $i => $coll) {
-                if (
-                        (
-                                array_key_exists('numviews', $coll)
-                                && $coll['numviews'] == 0
-                        ) || (
-                                $coll['submittedtime']
-//       	                        && !($coll['id'] == $selectedid && $selectediscollection == true)
-                        )
-                ) {
-                    unset($views['collections']['data'][$i]);
-                    $views['collections']['count']--;
-                }
-            }
 
             if ($error) {
                 echo $error;
@@ -296,9 +266,9 @@ class assignment_mahara extends assignment_base {
                 'var3',
                 get_string('lockpages', 'assignment_mahara'),
                 array(
-                    ASSIGNSUBMISSION_MAHARA_SETTING_DONTLOCK => get_string('no'),
-                    ASSIGNSUBMISSION_MAHARA_SETTING_KEEPLOCKED => get_string('yeskeeplocked', 'assignment_mahara'),
-                    ASSIGNSUBMISSION_MAHARA_SETTING_UNLOCK => get_string('yesunlock', 'assignment_mahara')
+                    ASSIGNMENT_MAHARA_SETTING_DONTLOCK => get_string('no'),
+                    ASSIGNMENT_MAHARA_SETTING_KEEPLOCKED => get_string('yeskeeplocked', 'assignment_mahara'),
+                    ASSIGNMENT_MAHARA_SETTING_UNLOCK => get_string('yesunlock', 'assignment_mahara')
                 )
         );
         $mform->setHelpButton(
@@ -311,7 +281,7 @@ class assignment_mahara extends assignment_base {
         );
         $mform->setDefault(
                 'var3',
-                ASSIGNSUBMISSION_MAHARA_SETTING_UNLOCK
+                ASSIGNMENT_MAHARA_SETTING_UNLOCK
         );
     }
 
@@ -349,10 +319,28 @@ class assignment_mahara extends assignment_base {
             . '&mnet' . ($iscollection ? 'coll' : 'view') . 'id=' . $viewid;
     }
 
-    function submit_view($viewid, $iscollection = false, $lock = false) {
+    function submit_view($viewid, $iscollection = false) {
         global $CFG, $USER, $MNET;
 
         $submission = $this->get_submission($USER->id, true);
+        if ($submission->data2) {
+            $olddata = unserialize($submission->data2);
+            $oldviewid = $olddata['id'];
+            $oldiscoll = $olddata['iscollection'];
+            $oldviewstatus = $olddata['viewstatus'];
+            // If they're submitting a different view, unlock the old view
+            if (
+                    !($viewid == $oldviewid && $iscollection == $oldiscoll)
+                    && $oldviewstatus == self::MAHARA_STATUS_LOCKED
+            ) {
+                $this->mnet_release_view($oldviewid, $oldiscoll);
+            }
+        }
+
+        $lock = (bool)(
+                $this->assignment->var3 == ASSIGNMENT_MAHARA_SETTING_UNLOCK
+                || $this->assignment->var3 == ASSIGNMENT_MAHARA_SETTING_KEEPLOCKED
+        );
 
         require_once $CFG->dirroot . '/mnet/xmlrpc/client.php';
         $mnet_sp = $this->get_mnet_sp();
@@ -378,18 +366,6 @@ class assignment_mahara extends assignment_base {
             $data['viewstatus'] = self::MAHARA_STATUS_NORMAL;
         }
 
-        $mahara_outcomes = array();
-
-        foreach ($data['outcome'] as &$o) {
-            $scale1 = array();
-            foreach ($o['scale'] as &$item) {
-                $scale1[$item['value']] = $item['name'];
-            }
-            $mahara_outcomes[$o['outcome']][] = array('scale' => $scale1, 'grade' => $o['grade']);
-        }
-
-        unset($data['outcome']);
-
         $update = new object();
         $update->id           = $submission->id;
         $update->timemodified = time();
@@ -407,40 +383,6 @@ class assignment_mahara extends assignment_base {
         );
         $update->data2 = addslashes(serialize($data));
 
-
-        // If mahara sent attached outcomes along with the view, and we have outcomes here with
-        // matching names and a matching scale, and we don't already have those outcomes, then
-        // import them.
-        require_once($CFG->libdir.'/gradelib.php');
-        $grading_info = grade_get_grades($this->course->id, 'mod', 'assignment', $this->assignment->id, $USER->id);
-
-        if (!empty($grading_info->outcomes)) {
-            $scales = array();
-            $import = array();
-            foreach($grading_info->outcomes as $o) {
-                // If we already have a grade for this outcome, the assignment is just a
-                // resubmission, not a new import.  Ignore it.
-                if ($o->grades[$userid] && $o->grades[$userid]->grade) {
-                    continue;
-                }
-                if (isset($mahara_outcomes[$o->name])) {
-                    if (!isset($scales[$o->scaleid])) {
-                        $scales[$o->scaleid] = make_grades_menu(-$o->scaleid);
-                    }
-                    foreach ($mahara_outcomes[$o->name] as $mahara_scale_grade) {
-                        if ($scales[$o->scaleid] == $mahara_scale_grade['scale']) {
-                            // Found a match; import the grade
-                            $import[$o->itemnumber] = $mahara_scale_grade['grade'];
-                            break;
-                        }
-                    }
-                }
-            }
-            if (count($import) > 0) {
-                grade_update_outcomes('mod/assignment', $this->course->id, 'mod', 'assignment', $this->assignment->id, $USER->id, $import);
-            }
-        }
-
         if (!update_record('assignment_submissions', $update)) {
             return false;
         }
@@ -450,8 +392,21 @@ class assignment_mahara extends assignment_base {
         return true;
     }
 
+    /**
+     * Get all the views & collections the user can pick for this submission
+     *
+     * @param string $query A search query, to get only views/collections with matching titles
+     * @return boolean[]|string[]
+     */
     function get_views($query) {
         global $CFG, $USER, $MNET;
+
+        // Get info about which view/collection is already selected (if any)
+        $submission = $this->get_submission();
+        $data = unserialize($submission->data2);
+        $selectediscollection = $data['iscollection'];
+        $selectedid = $data['id'];
+        unset($data);
 
         $error = false;
         $viewdata = array();
@@ -469,7 +424,34 @@ class assignment_mahara extends assignment_base {
             $mnetrequest->add_param($query);
 
             if ($mnetrequest->send($mnet_sp) === true) {
-                $viewdata = $mnetrequest->response;
+                $views = $mnetrequest->response;
+                    // Filter out collection views, special views, already-submitted views, and the currently selected view
+                    foreach ($views['data'] as $i => $view) {
+                        if (
+                                $view['collid']
+                                || $view['type'] != 'portfolio'
+                                || $view['submittedtime']
+                                || (!$selectediscollection && $view['id'] == $selectedid)
+                        ) {
+                            unset($views['ids'][$i]);
+                            unset($views['data'][$i]);
+                            $views['count']--;
+                        }
+                    }
+                    // Filter out empty or submitted collections, and the currently selected collections
+                    foreach ($views['collections']['data'] as $i => $coll) {
+                        if (
+                                (
+                                        array_key_exists('numviews', $coll)
+                                        && $coll['numviews'] == 0
+                                )
+                                || $coll['submittedtime']
+                                || ($selectediscollection && $coll['id'] == $selectedid)
+                        ) {
+                            unset($views['collections']['data'][$i]);
+                            $views['collections']['count']--;
+                        }
+                    }
             } else {
                 $error = "RPC mod/mahara/rpclib.php/get_views_for_user:<br/>";
                 foreach ($mnetrequest->error as $errormessage) {
@@ -478,7 +460,7 @@ class assignment_mahara extends assignment_base {
                 }
             }
         }
-        return array($error, $viewdata);
+        return array($error, $views);
     }
 
     function process_outcomes($userid) {
@@ -517,15 +499,66 @@ class assignment_mahara extends assignment_base {
         }
 
         require_once $CFG->dirroot . '/mnet/xmlrpc/client.php';
+        $this->mnet_release_view($data['id'], $data['iscollection']);
+    }
+
+    /**
+     * Hook function for when a submission's grade gets updated
+     * {@inheritDoc}
+     * @see assignment_base::update_grade()
+     */
+    function update_grade($submission) {
+        parent::update_grade($submission);
+        $submission = get_record('assignment_submissions', 'id', $submission->id);
+        // If they haven't been graded yet, nothing to do
+        if (false === assignment_get_user_grades($this->assignment, $submission->userid)) {
+            return;
+        }
+
+        // If they have been graded, check to see if we need to unlock the submitted page
+        if (!$submission->data2) {
+            return;
+        }
+        $data = unserialize($submission->data2);
+        if (
+                $data['viewstatus'] == self::MAHARA_STATUS_LOCKED
+                && $this->assignment->var3 != ASSIGNMENT_MAHARA_SETTING_KEEPLOCKED
+        ) {
+            $this->mnet_release_view($data['id'], $data['iscollection']);
+        }
+    }
+
+    /**
+     * Delete an assignment activity
+     * {@inheritDoc}
+     * @see assignment_base::delete_instance()
+     */
+    function delete_instance($assignment) {
+        // Unlock any pages & collections locked by this assignment.
+        $submissions = $this->get_submissions();
+        if ($submissions) {
+            foreach ($submissions as $submission) {
+                if ($submission->data2) {
+                    $data = unserialize($submission->data2);
+                    if ($data['viewstatus'] == self::MAHARA_STATUS_LOCKED) {
+                        $this->mnet_release_view($data['id'], $data['iscollection']);
+                    }
+                }
+            }
+        }
+    }
+
+    function mnet_release_view($viewid, $iscollection) {
+        global $USER, $CFG, $MNET;
+        require_once $CFG->dirroot . '/mnet/xmlrpc/client.php';
         $mnet_sp = $this->get_mnet_sp();
         $mnetrequest = new mnet_xmlrpc_client();
         $mnetrequest->set_method('mod/mahara/rpclib.php/release_submitted_view');
-        $mnetrequest->add_param($data['id']);
-        $mnetrequest->add_param($viewoutcomes);
+        $mnetrequest->add_param($viewid);
+        $mnetrequest->add_param(null);
         $mnetrequest->add_param($USER->username);
+        $mnetrequest->add_param($iscollection);
         // Do something if this fails?  Or use cron to export the same data later?
         $mnetrequest->send($mnet_sp);
     }
-
 }
-?>
