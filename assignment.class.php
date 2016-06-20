@@ -1,6 +1,11 @@
 <?php // $Id$
 require_once($CFG->libdir.'/formslib.php');
 
+// Statuses for locking setting.
+define('ASSIGNSUBMISSION_MAHARA_SETTING_DONTLOCK', 0);
+define('ASSIGNSUBMISSION_MAHARA_SETTING_KEEPLOCKED', 1);
+define('ASSIGNSUBMISSION_MAHARA_SETTING_UNLOCK', 2);
+
 /**
  * Extend the base assignment class for mahara portfolio assignments
  *
@@ -79,7 +84,7 @@ class assignment_mahara extends assignment_base {
             $data = unserialize($submission->data2);
             echo '<div><strong>' . get_string('selectedview', 'assignment_mahara') . ': </strong>'
               . '<a href="' . $CFG->wwwroot . '/auth/mnet/jump.php?hostid=' . $this->remote_mnet_host_id()
-              . '&amp;wantsurl=' . urlencode($data['mneturl']) . '">' 
+              . '&amp;wantsurl=' . urlencode($data['mneturl']) . '">'
               . $data['title'] . '</a></div>';
         }
 
@@ -216,7 +221,7 @@ class assignment_mahara extends assignment_base {
         }
         $data = unserialize($submission->data2);
         return '<div><a href="' . $CFG->wwwroot . '/auth/mnet/jump.php?hostid=' . $this->remote_mnet_host_id()
-          . '&amp;wantsurl=' . urlencode($data['mneturl']) . '">' 
+          . '&amp;wantsurl=' . urlencode($data['mneturl']) . '">'
           . $data['title'] . '</a></div>';
     }
 
@@ -229,10 +234,10 @@ class assignment_mahara extends assignment_base {
 
         // Get Mahara hosts we are doing SSO with
         $sql = "
-             SELECT DISTINCT 
-                 h.id, 
+             SELECT DISTINCT
+                 h.id,
                  h.name
-             FROM 
+             FROM
                  {$CFG->prefix}mnet_host h,
                  {$CFG->prefix}mnet_application a,
                  {$CFG->prefix}mnet_host2service h2s_IDP,
@@ -260,7 +265,7 @@ class assignment_mahara extends assignment_base {
                 $h = $h->name;
             }
             $mform->addElement('select', 'var2', get_string("site"), $hosts);
-            $mform->setHelpButton('var2', array('var2', get_string('site', 'assignment'), 'assignment'));
+            $mform->setHelpButton('var2', array('site', get_string('site'), 'assignment_mahara'));
             $mform->setDefault('var2', key($hosts));
         }
         else {
@@ -277,10 +282,37 @@ class assignment_mahara extends assignment_base {
         $mform->setHelpButton('emailteachers', array('emailteachers', get_string('emailteachers', 'assignment'), 'assignment'));
         $mform->setDefault('emailteachers', 0);
 
-        $mform->addElement('select', 'var1', get_string("commentinline", "assignment"), $ynoptions);
+        $mform->addElement(
+                'select',
+                'var1',
+                get_string("commentinline", "assignment"),
+                $ynoptions
+        );
         $mform->setHelpButton('var1', array('commentinline', get_string('commentinline', 'assignment'), 'assignment'));
         $mform->setDefault('var1', 0);
 
+        $mform->addElement(
+                'select',
+                'var3',
+                get_string('lockpages', 'assignment_mahara'),
+                array(
+                    ASSIGNSUBMISSION_MAHARA_SETTING_DONTLOCK => get_string('no'),
+                    ASSIGNSUBMISSION_MAHARA_SETTING_KEEPLOCKED => get_string('yeskeeplocked', 'assignment_mahara'),
+                    ASSIGNSUBMISSION_MAHARA_SETTING_UNLOCK => get_string('yesunlock', 'assignment_mahara')
+                )
+        );
+        $mform->setHelpButton(
+                'var3',
+                array(
+                        'lockpages',
+                        get_string('lockpages', 'assignment_mahara'),
+                        'assignment_mahara'
+                )
+        );
+        $mform->setDefault(
+                'var3',
+                ASSIGNSUBMISSION_MAHARA_SETTING_UNLOCK
+        );
     }
 
     function remote_mnet_host_id() {
@@ -297,13 +329,13 @@ class assignment_mahara extends assignment_base {
 
     /**
      * Add MNet access params to a view/collection URL.
-     * 
-     * When a properly upgraded Mahara site sees these params in a request 
-     * coming from a user who has authenticated to Mahara via MNet, it will 
+     *
+     * When a properly upgraded Mahara site sees these params in a request
+     * coming from a user who has authenticated to Mahara via MNet, it will
      * use the params to phone back to Moodle to check whether that Moodle
      * user has permission to view the specified page as part of a Moodle
      * assigment submission.
-     * 
+     *
      * @param string $url Basic Moodle view URL
      * @param int $viewid ID of the view or collection
      * @param bool $iscollection Whether it's a view or a collection
@@ -316,7 +348,7 @@ class assignment_mahara extends assignment_base {
             . '&assignment=' . $submissionid
             . '&mnet' . ($iscollection ? 'coll' : 'view') . 'id=' . $viewid;
     }
-    
+
     function submit_view($viewid, $iscollection = false, $lock = false) {
         global $CFG, $USER, $MNET;
 
