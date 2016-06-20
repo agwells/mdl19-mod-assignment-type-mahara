@@ -47,12 +47,12 @@ class assignment_mahara extends assignment_base {
         $submission = $this->get_submission();
 
         $editable = has_capability('mod/assignment:submit', $context) && $this->isopen()
-            && (!$submission || $this->assignment->resubmit || !$submission->timemarked);
+            && (!$submission->data2 || $this->assignment->resubmit || !$submission->timemarked);
 
         if ($editable) {
             $viewid = optional_param('view', null, PARAM_INTEGER);
             $iscoll = optional_param('iscoll', false, PARAM_BOOL);
-            if ($viewid && $this->submit_view($viewid, $iscoll)) {
+            if ($viewid !== null && $this->submit_view($viewid, $iscoll)) {
                 //TODO fix log actions - needs db upgrade
                 $submission = $this->get_submission();
                 add_to_log($this->course->id, 'assignment', 'upload',
@@ -77,7 +77,7 @@ class assignment_mahara extends assignment_base {
 
         print_box_start('generalbox boxwidthnormal boxaligncenter centerpara');
 
-        if ($submission) {
+        if ($submission->data2) {
             if ($saved) {
                 notify(get_string('submissionsaved', 'assignment'), 'notifysuccess');
             }
@@ -85,10 +85,14 @@ class assignment_mahara extends assignment_base {
             echo '<div><strong>' . get_string('selectedview', 'assignment_mahara') . ': </strong>'
               . '<a href="' . $CFG->wwwroot . '/auth/mnet/jump.php?hostid=' . $this->remote_mnet_host_id()
               . '&amp;wantsurl=' . urlencode($data['mneturl']) . '">'
-              . $data['title'] . '</a></div>';
+              . $data['title'] . '</a>';
+            if ($editable) {
+                echo ' <small><a href="?id=' . $this->cm->id. '&view=0&$iscoll=0">(deselect?)</a></small>';
+            }
+            echo '</div>';
         }
 
-        if ($submission && $editable) {
+        if ($submission->data2 && $editable) {
             echo '<hr>';
         }
 
@@ -244,22 +248,13 @@ class assignment_mahara extends assignment_base {
 
         $ynoptions = array( 0 => get_string('no'), 1 => get_string('yes'));
 
-        $mform->addElement('select', 'resubmit', get_string("allowresubmit", "assignment"), $ynoptions);
-        $mform->setHelpButton('resubmit', array('resubmit', get_string('allowresubmit', 'assignment'), 'assignment'));
-        $mform->setDefault('resubmit', 0);
-
         $mform->addElement('select', 'emailteachers', get_string("emailteachers", "assignment"), $ynoptions);
         $mform->setHelpButton('emailteachers', array('emailteachers', get_string('emailteachers', 'assignment'), 'assignment'));
         $mform->setDefault('emailteachers', 0);
 
-        $mform->addElement(
-                'select',
-                'var1',
-                get_string("commentinline", "assignment"),
-                $ynoptions
-        );
-        $mform->setHelpButton('var1', array('commentinline', get_string('commentinline', 'assignment'), 'assignment'));
-        $mform->setDefault('var1', 0);
+        $mform->addElement('select', 'resubmit', get_string("allowresubmit", "assignment"), $ynoptions);
+        $mform->setHelpButton('resubmit', array('resubmit', get_string('allowresubmit', 'assignment'), 'assignment'));
+        $mform->setDefault('resubmit', 0);
 
         $mform->addElement(
                 'select',
@@ -337,51 +332,58 @@ class assignment_mahara extends assignment_base {
             }
         }
 
-        $lock = (bool)(
-                $this->assignment->var3 == ASSIGNMENT_MAHARA_SETTING_UNLOCK
-                || $this->assignment->var3 == ASSIGNMENT_MAHARA_SETTING_KEEPLOCKED
-        );
-
-        require_once $CFG->dirroot . '/mnet/xmlrpc/client.php';
-        $mnet_sp = $this->get_mnet_sp();
-        $mnetrequest = new mnet_xmlrpc_client();
-        $mnetrequest->set_method('mod/mahara/rpclib.php/submit_view_for_assessment');
-        $mnetrequest->add_param($USER->username);
-        $mnetrequest->add_param($viewid);
-        $mnetrequest->add_param($iscollection);
-        $mnetrequest->add_param('moodle-assignsubmission-mahara:2');
-        $mnetrequest->add_param($lock);
-
-        if ($mnetrequest->send($mnet_sp) !== true) {
-            return false;
-        }
-        $data = $mnetrequest->response;
-        $data['iscollection'] = $iscollection;
-        // Assume we're dealing with a fully upgraded Mahara
-        // that uses Mnet for access control, instead of
-        // Mahara secreturl access tokens
-        if ($lock) {
-            $data['viewstatus'] = self::MAHARA_STATUS_LOCKED;
-        } else {
-            $data['viewstatus'] = self::MAHARA_STATUS_NORMAL;
-        }
-
-        $update = new object();
-        $update->id           = $submission->id;
+        $update = new stdClass();
+        $update->id = $submission->id;
         $update->timemodified = time();
 
-        // data1 column is never actually used anywhere... and I can't think
-        // of one value that would be consistently useful by itself.
-//        $update->data1 = addslashes('<a href="' . $data['fullurl'], '">' . clean_text($data['title']) . '</a>');
+        // This means they chose to deselect the current submission, without
+        // selecting a replacement.
+        if ($viewid == 0) {
+            $update->data2 = '';
+        } else {
 
-        // Add mnet access flags to the page's URL
-        $data['mneturl'] = $this->mnet_access_url(
-                $data['url'],
-                $viewid,
-                $iscollection,
-                $submission->id
-        );
-        $update->data2 = addslashes(serialize($data));
+            $lock = (bool)(
+                    $this->assignment->var3 == ASSIGNMENT_MAHARA_SETTING_UNLOCK
+                    || $this->assignment->var3 == ASSIGNMENT_MAHARA_SETTING_KEEPLOCKED
+            );
+
+            require_once $CFG->dirroot . '/mnet/xmlrpc/client.php';
+            $mnet_sp = $this->get_mnet_sp();
+            $mnetrequest = new mnet_xmlrpc_client();
+            $mnetrequest->set_method('mod/mahara/rpclib.php/submit_view_for_assessment');
+            $mnetrequest->add_param($USER->username);
+            $mnetrequest->add_param($viewid);
+            $mnetrequest->add_param($iscollection);
+            $mnetrequest->add_param('moodle-assignsubmission-mahara:2');
+            $mnetrequest->add_param($lock);
+
+            if ($mnetrequest->send($mnet_sp) !== true) {
+                return false;
+            }
+            $data = $mnetrequest->response;
+            $data['iscollection'] = $iscollection;
+            // Assume we're dealing with a fully upgraded Mahara
+            // that uses Mnet for access control, instead of
+            // Mahara secreturl access tokens
+            if ($lock) {
+                $data['viewstatus'] = self::MAHARA_STATUS_LOCKED;
+            } else {
+                $data['viewstatus'] = self::MAHARA_STATUS_NORMAL;
+            }
+
+            // data1 column is never actually used anywhere... and I can't think
+            // of one value that would be consistently useful by itself.
+    //        $update->data1 = addslashes('<a href="' . $data['fullurl'], '">' . clean_text($data['title']) . '</a>');
+
+            // Add mnet access flags to the page's URL
+            $data['mneturl'] = $this->mnet_access_url(
+                    $data['url'],
+                    $viewid,
+                    $iscollection,
+                    $submission->id
+            );
+            $update->data2 = addslashes(serialize($data));
+        }
 
         if (!update_record('assignment_submissions', $update)) {
             return false;
@@ -546,6 +548,7 @@ class assignment_mahara extends assignment_base {
                 }
             }
         }
+        parent::delete_instance($assignment);
     }
 
     function mnet_release_view($viewid, $iscollection) {
