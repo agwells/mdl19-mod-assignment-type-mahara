@@ -1,6 +1,4 @@
 <?php // $Id$
-require_once($CFG->libdir.'/formslib.php');
-
 // Statuses for locking setting.
 define('ASSIGNMENT_MAHARA_SETTING_DONTLOCK', 0);
 define('ASSIGNMENT_MAHARA_SETTING_KEEPLOCKED', 1);
@@ -513,7 +511,8 @@ class assignment_mahara extends assignment_base {
         parent::update_grade($submission);
         $submission = get_record('assignment_submissions', 'id', $submission->id);
         // If they haven't been graded yet, nothing to do
-        if (false === assignment_get_user_grades($this->assignment, $submission->userid)) {
+        $result = assignment_get_user_grades($this->assignment, $submission->userid);
+        if (!$result || !$result[$submission->userid] || !$result[$submission->userid]->dategraded ) {
             return;
         }
 
