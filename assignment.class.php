@@ -123,7 +123,7 @@ class assignment_mahara extends assignment_base {
                     // Print views
                     foreach ($views['data'] as &$v) {
                         $windowname = 'view' . $v['id'];
-                        $viewurl = $this->remotehost->jumpurl . '&wantsurl=' . urlencode($v['mneturl']);
+                        $viewurl = $this->remotehost->jumpurl . '&wantsurl=' . urlencode($v['url']);
                         $js = "this.target='$windowname';window.open('" . $viewurl . "', '$windowname', 'resizable,scrollbars,width=920,height=600');return false;";
                         echo '<tr><td><a href="' . $viewurl . '" target="_blank" onclick="' . $js . '">'
                           . '<img align="top" src="'.$CFG->pixpath.'/f/html.gif" height="16" width="16" alt="html" /> ' . $v['title'] . '</a></td>'
@@ -132,7 +132,7 @@ class assignment_mahara extends assignment_base {
                     // Print collections
                     foreach ($views['collections']['data'] as &$v) {
                         $windowname = 'view' . $v['id'];
-                        $viewurl = $this->remotehost->jumpurl . '&wantsurl=' . urlencode($v['mneturl']);
+                        $viewurl = $this->remotehost->jumpurl . '&wantsurl=' . urlencode($v['url']);
                         $js = "this.target='$windowname';window.open('" . $viewurl . "', '$windowname', 'resizable,scrollbars,width=920,height=600');return false;";
                         echo '<tr><td><a href="' . $viewurl . '" target="_blank" onclick="' . $js . '">'
                           . '<img align="top" src="'.$CFG->pixpath.'/f/folder.gif" height="16" width="16" alt="html" /> ' . $v['name'] . ' (';
